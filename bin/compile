@@ -1,0 +1,73 @@
+#!/bin/sh
+
+indent() {
+  sed -u "s/^/       /"
+}
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+ENV_DIR=$3
+APP_DIR=/app
+
+GIT_LFS_VERSION=v2.10.0
+DOWNLOAD_URL="https://github.com/git-lfs/git-lfs/releases/download/$GIT_LFS_VERSION/git-lfs-linux-amd64-$GIT_LFS_VERSION.tar.gz"
+PACKAGE_FILENAME=${DOWNLOAD_URL##*/}
+PACKAGE_DIR="$CACHE_DIR/${PACKAGE_FILENAME%.tar.gz}"
+
+echo "-----> Installing git-lfs-linux-amd64-$GIT_LFS_VERSION"
+
+if [ ! -d "$PACKAGE_DIR" ]; then
+  if [ ! -f "$CACHE_DIR/$PACKAGE_FILENAME" ]; then
+    curl --silent --show-error --location --output "$CACHE_DIR/$PACKAGE_FILENAME" $DOWNLOAD_URL
+  fi
+
+  mkdir "$PACKAGE_DIR"
+  tar --extract --file "$CACHE_DIR/$PACKAGE_FILENAME" --directory "$PACKAGE_DIR" git-lfs
+  rm "$CACHE_DIR/$PACKAGE_FILENAME"
+fi
+
+mkdir -p "$BUILD_DIR"/.heroku/git-lfs/bin
+cp "$PACKAGE_DIR"/git-lfs "$BUILD_DIR"/.heroku/git-lfs/bin
+
+mkdir -p "$BUILD_DIR"/.profile.d
+cat > "$BUILD_DIR"/.profile.d/000_git_lfs.sh <<EOF
+export PATH="\$HOME/.heroku/git-lfs/bin:\$PATH"
+EOF
+
+export PATH="$BUILD_DIR/.heroku/git-lfs/bin${PATH:+:}${PATH:-}"
+
+if [ -f "$BUILD_DIR/.gitattributes" ]; then
+  GIT_LFS_REPOSITORY=`cat "$ENV_DIR/GIT_LFS_REPOSITORY"`
+  GIT_LFS_SSH_KEY=`cat "$ENV_DIR/GIT_LFS_SSH_KEY"`
+
+  if [ -n "$GIT_LFS_REPOSITORY" ]; then
+    echo "Downloading git-lfs data" | indent
+
+    if [ -n "$GIT_LFS_SSH_KEY" ]; then
+      GIT_HOST="${GIT_LFS_REPOSITORY#*@}"
+      GIT_HOST="${GIT_HOST%:*}"
+
+      mkdir -p "$HOME"/.ssh
+
+      echo "$GIT_LFS_SSH_KEY" > "$HOME"/.ssh/identity_file
+      cat > "$HOME"/.ssh/config <<EOF
+Host $GIT_HOST
+  IdentityFile "$HOME/.ssh/identity_file"
+  StrictHostKeyChecking=no
+EOF
+    fi
+
+    git -C "$BUILD_DIR" init | indent
+    git -C "$BUILD_DIR" remote add origin "$GIT_LFS_REPOSITORY" | indent
+    git -C "$BUILD_DIR" fetch origin | indent
+    git -C "$BUILD_DIR" reset --mixed "$SOURCE_VERSION" | indent
+    git -C "$BUILD_DIR" lfs install | indent
+    git -C "$BUILD_DIR" lfs pull origin | indent
+
+    if [ $? -ne 0 ]; then
+      git -C "$BUILD_DIR" lfs logs last | indent
+    fi
+
+    rm -rf "$BUILD_DIR"/.git "$HOME"/.ssh/config "$HOME"/.ssh/identity_file
+  fi
+fi
